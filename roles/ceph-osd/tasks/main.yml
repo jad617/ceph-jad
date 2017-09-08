@@ -2,53 +2,53 @@
 - include: check_mandatory_vars.yml
 
 - include: pre_requisite.yml
-  when: not osd_containerized_deployment
+  when: not containerized_deployment
   # Hard code this so we will skip the entire file instead of individual tasks (Default isn't Consistent)
   static: False
 
-- include: ./scenarios/journal_collocation.yml
+- include: ceph_disk_cli_options_facts.yml
+
+- name: generate device list when osd_auto_discovery
+  set_fact:
+    devices: "{{ devices | default([]) + [ item.key | regex_replace('^', '/dev/') ] }}"
+  with_dict: "{{ ansible_devices }}"
   when:
-    - journal_collocation
-    - not osd_containerized_deployment
+    - ansible_devices is defined
+    - item.value.removable == "0"
+    - item.value.partitions|count == 0
+    - item.value.holders|count == 0
+    - osd_auto_discovery
+
+- include: check_devices.yml
+
+- include: ./scenarios/collocated.yml
+  when:
+    - osd_scenario == 'collocated'
   # Hard code this so we will skip the entire file instead of individual tasks (Default isn't Consistent)
   static: False
 
-- include: ./scenarios/raw_multi_journal.yml
+- include: ./scenarios/non-collocated.yml
   when:
-    - raw_multi_journal
-    - not osd_containerized_deployment
+    - osd_scenario == 'non-collocated'
   # Hard code this so we will skip the entire file instead of individual tasks (Default isn't Consistent)
   static: False
 
-- include: ./scenarios/osd_directory.yml
+- name: create lvm osds with ceph-volume
+  include: ./scenarios/lvm.yml
   when:
-    - osd_directory
-    - not osd_containerized_deployment
+    - osd_scenario == 'lvm'
+    - not containerized_deployment
   # Hard code this so we will skip the entire file instead of individual tasks (Default isn't Consistent)
   static: False
 
-- include: ./scenarios/bluestore.yml
+- name: ensure osd daemons are started
+  include: start_osds.yml
   when:
-    - osd_objectstore == 'bluestore'
-    - not osd_containerized_deployment
-  # Hard code this so we will skip the entire file instead of individual tasks (Default isn't Consistent)
-  static: False
-
-- include: ./scenarios/dmcrypt-journal-collocation.yml
-  when:
-    - dmcrypt_journal_collocation
-    - not osd_containerized_deployment
-  # Hard code this so we will skip the entire file instead of individual tasks (Default isn't Consistent)
-  static: False
-
-- include: ./scenarios/dmcrypt-dedicated-journal.yml
-  when:
-    - dmcrypt_dedicated_journal
-    - not osd_containerized_deployment
+    - not containerized_deployment
   # Hard code this so we will skip the entire file instead of individual tasks (Default isn't Consistent)
   static: False
 
 - include: ./docker/main.yml
-  when: osd_containerized_deployment
+  when: containerized_deployment
   # Hard code this so we will skip the entire file instead of individual tasks (Default isn't Consistent)
   static: False
