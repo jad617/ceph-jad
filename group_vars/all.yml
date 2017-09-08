@@ -84,19 +84,21 @@ ceph_stable: true
 ceph_stable_key: https://download.ceph.com/keys/release.asc
 ceph_stable_release: jewel # ceph stable release
 ceph_stable_repo: "http://download.ceph.com/debian-{{ ceph_stable_release }}"
+#ceph_release: 
+#        jewel : 10
 
 ######################################
 # Releases name to number dictionary #
 ######################################
 ceph_release_num:
-#  dumpling: 0.67
-#  emperor: 0.72
-#  firefly: 0.80
-#  giant: 0.87
-#  hammer: 0.94
-#  infernalis: 9
+  dumpling: 0.67
+  emperor: 0.72
+  firefly: 0.80
+  giant: 0.87
+  hammer: 0.94
+  infernalis: 9
   jewel: 10
-#  kraken: 11
+  kraken: 11
 
 
 ######################
@@ -114,7 +116,7 @@ ceph_release_num:
 fsid: "{{ cluster_uuid.stdout }}"
 generate_fsid: true
 
-cephx: true
+#cephx: true
 max_open_files: 131072
 
 ## Client options
@@ -143,9 +145,9 @@ max_open_files: 131072
 #   rbd_client_directory_mode: "0755"
 #
 # For OpenStack on Ubuntu or Debian, set:
-    rbd_client_directory_owner: "libvirt-qemu"
-    rbd_client_directory_group: "kvm"
-    rbd_client_directory_mode: "0755"
+#rbd_client_directory_owner: "libvirt-qemu"
+#rbd_client_directory_group: "kvm"
+#rbd_client_directory_mode: "0755"
 
 # If you set rbd_client_directory_mode, you must use a string (e.g.,
 # 'rbd_client_directory_mode: "0755"', *not*
@@ -164,8 +166,8 @@ max_open_files: 131072
 # You must define either monitor_interface or monitor_address. Preference
 # will go to monitor_interface if both are defined.
 #monitor_interface: interface
-monitor_interface: eth1 #Might change it depending if bonded or not
-monitor_address: 10.0.1.0/24
+monitor_interface: ens4 #Might change it depending if bonded or not
+monitor_address: 172.27.79.15/27
 # set to either ipv4 or ipv6, whichever your network is using
 ip_version: ipv4
 mon_use_fqdn: false # if set to true, the MON name used will be the fqdn in the ceph.conf
@@ -174,7 +176,7 @@ mon_use_fqdn: false # if set to true, the MON name used will be the fqdn in the 
 ## OSD options
 #
 journal_size: 5120 # OSD journal size in MB
-public_network: 10.0.10.0/24
+public_network: 172.27.8.232/28
 cluster_network: "{{ public_network }}"
 osd_mkfs_type: xfs
 osd_mkfs_options_xfs: -f -i size=2048

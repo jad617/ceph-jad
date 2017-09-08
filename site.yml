@@ -3,15 +3,8 @@
 
 - hosts:
   - mons
-  - agents
   - osds
   - mdss
-  - rgws
-  - nfss
-  - restapis
-  - rbdmirrors
-  - clients
-  - iscsigws
   gather_facts: false
   tags:
     - always
@@ -43,12 +36,6 @@
   become: True
   roles:
   - ceph-mon
-
-- hosts: agents
-  gather_facts: false
-  become: True
-  roles:
-  - ceph-agent
 
 - hosts: osds
   gather_facts: false

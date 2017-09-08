@@ -1,10 +1,8 @@
 [mons]
-mon1 ansible_host=23.92.176.221
-mon2 ansible_host=173.231.184.216
-mon3 ansible_host=173.231.184.219
+mon1 ansible_host=23.92.191.116
+mon2 ansible_host=23.92.191.117
 
 [osds]
-osd1 ansible_host=23.92.176.221
-osd2 ansible_host=173.231.184.216
-osd3 ansible_host=173.231.184.219
+osd1 ansible_host=23.92.191.116
+osd2 ansible_host=23.92.191.117
 

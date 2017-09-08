@@ -81,8 +81,8 @@ cephx: true
 # All scenario(except 3rd) inherit from the following device declaration
 
 devices:
-  - /dev/xdb
-  - /dev/xdc
+  - /dev/vdb
+#  - /dev/vdc
 #  - /dev/sdb
 #  - /dev/sdc
 #  - /dev/sdd
@@ -132,8 +132,8 @@ devices:
 # 2. Progressively add new devices
 raw_multi_journal: true
 raw_journal_devices:
-  - /dev/xdd
-  - /dev/xde
+#  - /dev/vdd
+#  - /dev/vde
 #  - /dev/sdg
 #  - /dev/sdg
 #raw_journal_devices: []
