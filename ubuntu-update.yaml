@@ -1,0 +1,13 @@
+---
+
+- hosts: mons
+  tasks:
+        - name: super-ugly hack to allow unauthenticated packages to install
+          copy: content='APT::Get::AllowUnauthenticated "true";' dest=/etc/apt/apt.conf.d/99temp owner=root group=root mode=0644
+
+        - name: Update and dist-upgrade
+          apt:
+                update_cache: yes
+                upgrade: dist
+                state: latest
+

@@ -6,12 +6,13 @@
 # upgraded one by one. It is really crucial for the update process to happen
 # in a serialized fashion. DO NOT CHANGE THIS VALUE.
 #
-# The four roles that apply to the ceph hosts will be applied: ceph-common,
-# ceph-mon, ceph-osd and ceph-mds. So any changes to configuration, package updates, etc,
-# will be applied as part of the rolling update process.
 #
-
-# /!\ DO NOT FORGET TO CHANGE THE RELEASE VERSION FIRST! /!\
+# If you run a Ceph community version, you have to change the variable: ceph_stable_release to the new release
+#
+# If you run Red Hat Ceph Storage and are doing a **major** update (e.g: from 2 to 3), you have two options:
+#   - if you use a CDN, you have to change the ceph_rhcs_version to a newer one
+#   - if you use an ISO, you have to change the ceph_rhcs_iso_path to the directory containing the new Ceph version
+#
 
 - name: confirm whether user really meant to upgrade the cluster
   hosts: localhost
@@ -34,17 +35,14 @@
 
 
 - name: gather facts and check the init system
-  vars:
-    mon_group_name:       mons
-    osd_group_name:       osds
-    mds_group_name:       mdss
-    rgw_group_name:       rgws
 
   hosts:
-    - "{{ mon_group_name }}"
-    - "{{ osd_group_name }}"
-    - "{{ mds_group_name }}"
-    - "{{ rgw_group_name }}"
+    - "{{ mon_group_name|default('mons') }}"
+    - "{{ osd_group_name|default('osds') }}"
+    - "{{ mds_group_name|default('mdss') }}"
+    - "{{ rgw_group_name|default('rgws') }}"
+    - "{{ mgr_group_name|default('mgrs') }}"
+    - "{{ client_group_name|default('clients') }}"
 
   become: True
   tasks:
@@ -52,39 +50,22 @@
 
     - set_fact: rolling_update=true
 
-    - name: check if sysvinit
-      stat:
-        path: /etc/rc?.d/S??ceph
-        follow: yes
-      register: is_sysvinit
-
-    - name: check if upstart
-      stat:
-        path: /var/lib/ceph/mon/ceph-{{ ansible_hostname }}/upstart
-      register: is_upstart
-
-    - name: check if systemd
-      command: grep -sq systemd /proc/1/comm
-      register: is_systemd
-
-
 - name: upgrade ceph mon cluster
 
   vars:
-    mon_group_name:       mons
     health_mon_check_retries: 5
-    health_mon_check_delay: 10
+    health_mon_check_delay: 15
     upgrade_ceph_packages: True
 
   hosts:
-    - "{{ mon_group_name }}"
+    - "{{ mon_group_name|default('mons') }}"
 
   serial: 1
   become: True
 
   pre_tasks:
     - name: set mon_host_count
-      set_fact: mon_host_count={{ groups.mons | length }}
+      set_fact: mon_host_count={{ groups[mon_group_name] | length }}
 
     - debug: msg="WARNING - upgrading a ceph cluster with only one monitor node ({{ inventory_hostname }})"
       when: mon_host_count | int == 1
@@ -94,13 +75,13 @@
         name: ceph-mon
         state: stopped
         args: id={{ ansible_hostname }}
-      when: is_upstart.stat.exists == True
+      when: ansible_service_mgr == 'upstart'
 
     - name: stop ceph mons with sysvinit
       service:
         name: ceph
         state: stopped
-      when: is_sysvinit.stat.exists == True
+      when: ansible_service_mgr == 'sysvinit'
 
     - name: stop ceph mons with systemd
       service:
@@ -108,10 +89,14 @@
         state: stopped
         enabled: yes
       when:
-        - is_systemd
-        - not mon_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - not containerized_deployment
 
   roles:
+    - ceph-defaults
+    - ceph-config
+    - { role: ceph-common, when: not containerized_deployment }
+    - { role: ceph-docker-common, when: containerized_deployment }
     - ceph-mon
 
   post_tasks:
@@ -120,13 +105,13 @@
         name: ceph-mon
         state: started
         args: id={{ ansible_hostname }}
-      when: is_upstart.stat.exists == True
+      when: ansible_service_mgr == 'upstart'
 
     - name: start ceph mons with sysvinit
       service:
         name: ceph
         state: started
-      when: is_sysvinit.stat.exists == True
+      when: ansible_service_mgr == 'sysvinit'
 
     - name: start ceph mons with systemd
       service:
@@ -134,8 +119,8 @@
         state: started
         enabled: yes
       when:
-        - is_systemd
-        - not mon_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - not containerized_deployment
 
     - name: restart containerized ceph mons with systemd
       service:
@@ -143,97 +128,114 @@
         state: restarted
         enabled: yes
       when:
-        - is_systemd
-        - mon_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - containerized_deployment
 
     - name: set mon_host_count
-      set_fact: mon_host_count={{ groups.mons | length }}
+      set_fact: mon_host_count={{ groups[mon_group_name] | length }}
 
     - name: select a running monitor if multiple monitors
       set_fact: mon_host={{ item }}
-      with_items: "{{ groups.mons }}"
+      with_items: "{{ groups[mon_group_name] }}"
       when:
         - mon_host_count | int > 1
         - item != inventory_hostname
 
     - name: select first monitor if only one monitor
       set_fact: mon_host={{ item }}
-      with_items: "{{ groups.mons[0] }}"
+      with_items: "{{ groups[mon_group_name][0] }}"
       when:
         - mon_host_count | int == 1
 
-    - name: waiting for the monitor to join the quorum...
-      shell: |
-        ceph -s --cluster {{ cluster }} | grep monmap | sed 's/.*quorum//' | egrep -sq {{ ansible_hostname }}
-      register: result
-      until: result.rc == 0
+    - name: get num_pgs - non container
+      command: ceph --cluster "{{ cluster }}" -s --format json
+      register: ceph_pgs
+      delegate_to: "{{ mon_host }}"
+      when:
+        - not containerized_deployment
+
+    - name: get num_pgs - container
+      command: docker exec ceph-mon-{{ hostvars[mon_host]['ansible_hostname'] }} ceph --cluster "{{ cluster }}" -s --format json
+      register: ceph_pgs
+      delegate_to: "{{ mon_host }}"
+      when:
+        - containerized_deployment
+
+    - name: non container | waiting for the monitor to join the quorum...
+      command: ceph --cluster "{{ cluster }}" -s --format json
+      register: ceph_health_raw
+      until: >
+        hostvars[mon_host]['ansible_hostname'] in (ceph_health_raw.stdout | from_json)["quorum_names"]
       retries: "{{ health_mon_check_retries }}"
       delay: "{{ health_mon_check_delay }}"
       delegate_to: "{{ mon_host }}"
-      when: not mon_containerized_deployment
+      when:
+        - not containerized_deployment
+        - (ceph_pgs.stdout | from_json).pgmap.num_pgs != "0"
 
-    - name: waiting for the containerized monitor to join the quorum...
-      shell: |
-        docker exec {{ hostvars[mon_host]['ansible_hostname'] }} ceph -s --cluster {{ cluster }} | grep quorum | sed 's/.*quorum//' | egrep -sq {{ ansible_hostname }}
-      register: result
-      until: result.rc == 0
+    - name: container | waiting for the containerized monitor to join the quorum...
+      command: docker exec ceph-mon-{{ hostvars[mon_host]['ansible_hostname'] }} ceph --cluster "{{ cluster }}" -s --format json
+      register: ceph_health_raw
+      until: >
+        hostvars[mon_host]['ansible_hostname'] in (ceph_health_raw.stdout | from_json)["quorum_names"]
       retries: "{{ health_mon_check_retries }}"
       delay: "{{ health_mon_check_delay }}"
       delegate_to: "{{ mon_host }}"
-      when: mon_containerized_deployment
+      when:
+        - containerized_deployment
+        - (ceph_pgs.stdout | from_json).pgmap.num_pgs != "0"
 
-
-- name: upgrade ceph osds cluster
-
-  vars:
-    osd_group_name: osds
-    health_osd_check_retries: 40
-    health_osd_check_delay: 30
-    upgrade_ceph_packages: True
-
-  hosts:
-    - "{{ osd_group_name }}"
-
-  serial: 1
-  become: True
-
-  pre_tasks:
     - name: set osd flags
       command: ceph osd set {{ item }} --cluster {{ cluster }}
       with_items:
         - noout
         - noscrub
         - nodeep-scrub
-      delegate_to: "{{ groups.mons[0] }}"
-      when: not mon_containerized_deployment
+      delegate_to: "{{ groups[mon_group_name][0] }}"
+      when: not containerized_deployment
 
     - name: set containerized osd flags
       command: |
-          docker exec {{ hostvars[groups.mons[0]]['ansible_hostname'] }} ceph osd set {{ item }} --cluster {{ cluster }}
+          docker exec ceph-mon-{{ hostvars[groups[mon_group_name][0]]['ansible_hostname'] }} ceph osd set {{ item }} --cluster {{ cluster }}
       with_items:
         - noout
         - noscrub
         - nodeep-scrub
-      delegate_to: "{{ groups.mons[0] }}"
-      when: mon_containerized_deployment
+      delegate_to: "{{ groups[mon_group_name][0] }}"
+      when: containerized_deployment
 
+
+- name: upgrade ceph osds cluster
+
+  vars:
+    health_osd_check_retries: 40
+    health_osd_check_delay: 30
+    upgrade_ceph_packages: True
+
+  hosts:
+    - "{{ osd_group_name|default('osds') }}"
+
+  serial: 1
+  become: True
+
+  pre_tasks:
     - name: get osd numbers
-      shell: "if [ -d /var/lib/ceph/osd ] ; then ls /var/lib/ceph/osd | cut -d '-' -f 2 ; fi"
+      shell: "if [ -d /var/lib/ceph/osd ] ; then ls /var/lib/ceph/osd | sed 's/.*-//' ; fi"
       register: osd_ids
       changed_when: false
-      when: not osd_containerized_deployment
+      when: not containerized_deployment
 
     - name: stop ceph osds with upstart
       service:
         name: ceph-osd-all
         state: stopped
-      when: is_upstart.stat.exists == True
+      when: ansible_service_mgr == 'upstart'
 
     - name: stop ceph osds with sysvinit
       service:
         name: ceph
         state: stopped
-      when: is_sysvinit.stat.exists == True
+      when: ansible_service_mgr == 'sysvinit'
 
     - name: stop ceph osds with systemd
       service:
@@ -242,30 +244,34 @@
         enabled: yes
       with_items: "{{ osd_ids.stdout_lines }}"
       when:
-        - is_systemd
-        - not osd_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - not containerized_deployment
 
   roles:
+    - ceph-defaults
+    - ceph-config
+    - { role: ceph-common, when: not containerized_deployment }
+    - { role: ceph-docker-common, when: containerized_deployment }
     - ceph-osd
 
   post_tasks:
     - name: get osd numbers
-      shell: "if [ -d /var/lib/ceph/osd ] ; then ls /var/lib/ceph/osd | cut -d '-' -f 2 ; fi"
+      shell: "if [ -d /var/lib/ceph/osd ] ; then ls /var/lib/ceph/osd | sed 's/.*-//' ; fi"
       register: osd_ids
       changed_when: false
-      when: not osd_containerized_deployment
+      when: not containerized_deployment
 
     - name: start ceph osds with upstart
       service:
         name: ceph-osd-all
         state: started
-      when: is_upstart.stat.exists == True
+      when: ansible_service_mgr == 'upstart'
 
     - name: start ceph osds with sysvinit
       service:
         name: ceph
         state: started
-      when: is_sysvinit.stat.exists == True
+      when: ansible_service_mgr == 'sysvinit'
 
     - name: start ceph osds with systemd
       service:
@@ -274,67 +280,97 @@
         enabled: yes
       with_items: "{{ osd_ids.stdout_lines }}"
       when:
-        - is_systemd
-        - not osd_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - not containerized_deployment
 
     - name: restart containerized ceph osds with systemd
       service:
         name: ceph-osd@{{ item | basename }}
         state: restarted
         enabled: yes
-      with_items: "{{ ceph_osd_docker_devices }}"
+      with_items: "{{ devices }}"
       when:
-        - is_systemd
-        - osd_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - containerized_deployment
 
     - name: waiting for clean pgs...
-      shell: |
-        test "$(ceph pg stat --cluster {{ cluster }} | sed 's/^.*pgs://;s/active+clean.*//;s/ //')" -eq "$(ceph pg stat --cluster {{ cluster }}  | sed 's/pgs.*//;s/^.*://;s/ //')" && ceph health --cluster {{ cluster }}  | egrep -sq "HEALTH_OK|HEALTH_WARN"
-      register: result
-      until: result.rc == 0
+      command: ceph --cluster "{{ cluster }}" -s --format json
+      register: ceph_health_post
+      until: >
+        ((ceph_health_post.stdout | from_json).pgmap.pgs_by_state | length) == 1
+        and
+        (ceph_health_post.stdout | from_json).pgmap.pgs_by_state.0.state_name == "active+clean"
+      delegate_to: "{{ groups[mon_group_name][0] }}"
       retries: "{{ health_osd_check_retries }}"
       delay: "{{ health_osd_check_delay }}"
-      delegate_to: "{{ groups.mons[0] }}"
-      when: not osd_containerized_deployment
+      when:
+        - not containerized_deployment
 
     - name: container - waiting for clean pgs...
-      shell: |
-        test "$(docker exec {{ hostvars[groups.mons[0]]['ansible_hostname'] }} ceph pg stat --cluster {{ cluster }} | sed 's/^.*pgs://;s/active+clean.*//;s/ //')" -eq "$(docker exec {{ hostvars[groups.mons[0]]['ansible_hostname'] }} ceph pg stat --cluster {{ cluster }} | sed 's/pgs.*//;s/^.*://;s/ //')" && docker exec {{ hostvars[groups.mons[0]]['ansible_hostname'] }} ceph health --cluster {{ cluster }}  | egrep -sq "HEALTH_OK|HEALTH_WARN"
-      register: result
-      until: result.rc == 0
+      command: "docker exec ceph-mon-{{ hostvars[groups[mon_group_name][0]]['ansible_hostname'] }} ceph --cluster {{ cluster }} -s --format json"
+      register: ceph_health_post
+      until: >
+        ((ceph_health_post.stdout | from_json).pgmap.pgs_by_state | length) == 1
+        and
+        (ceph_health_post.stdout | from_json).pgmap.pgs_by_state.0.state_name == "active+clean"
+      delegate_to: "{{ groups[mon_group_name][0] }}"
       retries: "{{ health_osd_check_retries }}"
       delay: "{{ health_osd_check_delay }}"
-      delegate_to: "{{ groups.mons[0] }}"
-      when: osd_containerized_deployment
+      when:
+        - containerized_deployment
+
+- name: unset osd flags
+
+  hosts:
+    - "{{ mon_group_name|default('mons') }}"
+
+  become: True
+
+  roles:
+    - ceph-defaults
+
+  tasks:
+    - name: set_fact docker_exec_cmd_osd
+      set_fact:
+        docker_exec_cmd_update_osd: "docker exec ceph-mon-{{ hostvars[groups[mon_group_name][0]]['ansible_hostname'] }}"
+      when:
+        - containerized_deployment
 
     - name: unset osd flags
-      command: ceph osd unset {{ item }} --cluster {{ cluster }}
+      command: "{{ docker_exec_cmd_update_osd|default('') }} ceph osd unset {{ item }} --cluster {{ cluster }}"
       with_items:
         - noout
         - noscrub
         - nodeep-scrub
-      delegate_to: "{{ groups.mons[0] }}"
-      when: not osd_containerized_deployment
+      delegate_to: "{{ groups[mon_group_name][0] }}"
 
-    - name: unset containerized osd flags
-      command: |
-          docker exec {{ hostvars[groups.mons[0]]['ansible_hostname'] }} ceph osd unset {{ item }} --cluster {{ cluster }}
-      with_items:
-        - noout
-        - noscrub
-        - nodeep-scrub
-      delegate_to: "{{ groups.mons[0] }}"
-      when: osd_containerized_deployment
+    - name: get osd versions
+      command: "{{ docker_exec_cmd_update_osd|default('') }} ceph --cluster {{ cluster }} versions"
+      register: ceph_versions
+      delegate_to: "{{ groups[mon_group_name][0] }}"
+
+    - name: set_fact ceph_versions_osd
+      set_fact:
+        ceph_versions_osd: "{{ (ceph_versions.stdout|from_json).osd }}"
+      delegate_to: "{{ groups[mon_group_name][0] }}"
+
+    # length == 1 means there is a single osds versions entry
+    # thus all the osds are running the same version
+    - name: complete osds upgrade
+      command: "{{ docker_exec_cmd_update_osd|default('') }} ceph --cluster {{ cluster }} osd require-osd-release luminous"
+      delegate_to: "{{ groups[mon_group_name][0] }}"
+      when:
+        - (ceph_versions.stdout|from_json).osd | length == 1
+        - ceph_versions_osd | string | search("ceph version 12")
 
 
 - name: upgrade ceph mdss cluster
 
   vars:
-    mds_group_name: mdss
     upgrade_ceph_packages: True
 
   hosts:
-    - "{{ mds_group_name }}"
+    - "{{ mds_group_name|default('mdss') }}"
 
   serial: 1
   become: True
@@ -345,14 +381,14 @@
         name: ceph-mds
         state: stopped
         args: id={{ ansible_hostname }}
-      when: is_upstart.stat.exists == True
+      when: ansible_service_mgr == 'upstart'
 
     - name: stop ceph mdss with sysvinit
       service:
         name: ceph
         state: stopped
         args: mds
-      when: is_sysvinit.stat.exists == True
+      when: ansible_service_mgr == 'sysvinit'
 
     - name: stop ceph mdss with systemd
       service:
@@ -360,10 +396,14 @@
         state: stopped
         enabled: yes
       when:
-        - is_systemd
-        - not mds_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - not containerized_deployment
 
   roles:
+    - ceph-defaults
+    - ceph-config
+    - { role: ceph-common, when: not containerized_deployment }
+    - { role: ceph-docker-common, when: containerized_deployment }
     - ceph-mds
 
   post_tasks:
@@ -372,14 +412,14 @@
         name: ceph-mds
         state: started
         args: id={{ ansible_hostname }}
-      when: is_upstart.stat.exists == True
+      when: ansible_service_mgr == 'upstart'
 
     - name: start ceph mdss with sysvinit
       service:
         name: ceph
         state: started
         args: mds
-      when: is_sysvinit.stat.exists == True
+      when: ansible_service_mgr == 'sysvinit'
 
     - name: start ceph mdss with systemd
       service:
@@ -387,27 +427,26 @@
         state: started
         enabled: yes
       when:
-        - is_systemd
-        - not mds_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - not containerized_deployment
 
-    - name: restart ceph mdss with systemd
+    - name: restart ceph mdss
       service:
         name: ceph-mds@{{ ansible_hostname }}
         state: restarted
         enabled: yes
       when:
-        - is_systemd
-        - mds_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - containerized_deployment
 
 
 - name: upgrade ceph rgws cluster
 
   vars:
-    rgw_group_name: rgws
     upgrade_ceph_packages: True
 
   hosts:
-    - "{{ rgw_group_name }}"
+    - "{{ rgw_group_name|default('rgws') }}"
 
   serial: 1
   become: True
@@ -417,13 +456,13 @@
       service:
         name: ceph-radosgw
         state: stopped
-      when: is_upstart.stat.exists == True
+      when: ansible_service_mgr == 'upstart'
 
     - name: stop ceph rgws with sysvinit
       service:
         name: radosgw
         state: stopped
-      when: is_sysvinit.stat.exists == True
+      when: ansible_service_mgr == 'sysvinit'
 
     - name: stop ceph rgws with systemd
       service:
@@ -431,10 +470,14 @@
         state: stopped
         enabled: yes
       when:
-        - is_systemd
-        - not rgw_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - not containerized_deployment
 
   roles:
+    - ceph-defaults
+    - ceph-config
+    - { role: ceph-common, when: not containerized_deployment }
+    - { role: ceph-docker-common, when: containerized_deployment }
     - ceph-rgw
 
   post_tasks:
@@ -442,13 +485,13 @@
       service:
         name: ceph-radosgw
         state: started
-      when: is_upstart.stat.exists == True
+      when: ansible_service_mgr == 'upstart'
 
     - name: start ceph rgws with sysvinit
       service:
         name: radosgw
         state: started
-      when: is_sysvinit.stat.exists == True
+      when: ansible_service_mgr == 'sysvinit'
 
     - name: start ceph rgws with systemd
       service:
@@ -456,14 +499,102 @@
         state: started
         enabled: yes
       when:
-        - is_systemd
-        - not rgw_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - not containerized_deployment
 
     - name: restart containerized ceph rgws with systemd
       service:
-        name: ceph-rgw@{{ ansible_hostname }}
+        name: ceph-radosgw@rgw.{{ ansible_hostname }}
         state: restarted
         enabled: yes
       when:
-        - is_systemd
-        - rgw_containerized_deployment
+        - ansible_service_mgr == 'systemd'
+        - containerized_deployment
+
+
+- name: upgrade ceph client node
+
+  vars:
+    upgrade_ceph_packages: True
+
+  hosts:
+    - "{{ client_group_name|default('clients') }}"
+
+  serial: 1
+  become: True
+
+  roles:
+    - ceph-defaults
+    - ceph-config
+    - { role: ceph-common, when: not containerized_deployment }
+    - { role: ceph-docker-common, when: containerized_deployment }
+    - ceph-client
+
+
+- name: upgrade ceph mgr node
+
+  vars:
+    upgrade_ceph_packages: True
+
+  hosts:
+    - "{{ mgr_group_name|default('mgrs') }}"
+
+  serial: 1
+  become: True
+
+  pre_tasks:
+    # this task has a failed_when: false to handle the scenario where no mgr existed before the upgrade
+    - name: stop ceph mgrs
+      service:
+        name: ceph-mgr@{{ ansible_hostname }}
+        state: stopped
+        enabled: yes
+      failed_when: false
+      when:
+        - not containerized_deployment
+
+  roles:
+    - ceph-defaults
+    - ceph-config
+    - { role: ceph-common, when: not containerized_deployment }
+    - { role: ceph-docker-common, when: containerized_deployment }
+    - { role: ceph-mgr, when: "ceph_release_num.{{ ceph_release }} >= ceph_release_num.luminous" }
+
+  post_tasks:
+    - name: start ceph mgrs
+      service:
+        name: ceph-mgr@{{ ansible_hostname }}
+        state: started
+        enabled: yes
+      when:
+        - not containerized_deployment
+
+    - name: restart containerized ceph mgrs
+      service:
+        name: ceph-mgr@{{ ansible_hostname }}
+        state: restarted
+        enabled: yes
+      when:
+        - containerized_deployment
+
+
+- name: show ceph status
+
+  hosts:
+    - "{{ mon_group_name|default('mons') }}"
+
+  become: True
+
+  roles:
+    - ceph-defaults
+
+  tasks:
+    - name: set_fact docker_exec_cmd_status
+      set_fact:
+        docker_exec_cmd_status: "docker exec ceph-mon-{{ hostvars[groups[mon_group_name][0]]['ansible_hostname'] }}"
+      when:
+        - containerized_deployment
+
+    - name: show ceph status
+      command: "{{ docker_exec_cmd_status|default('') }} ceph --cluster {{ cluster }} -s"
+      delegate_to: "{{ groups[mon_group_name][0] }}"
