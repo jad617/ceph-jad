@@ -7,3 +7,8 @@ mon3 ansible_host=23.92.191.110
 osd1 ansible_host=23.92.191.108
 osd2 ansible_host=23.92.191.109
 osd3 ansible_host=23.92.191.110
+
+[mgrs]
+mgr1 ansible_host=23.92.191.108
+mgr3 ansible_host=23.92.191.109
+mgr2 ansible_host=23.92.191.110
